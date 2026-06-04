@@ -1,0 +1,56 @@
+# Run artifacts — large, machine-specific, not source-of-truth
+data/
+working/
+/tmp_runs/
+
+# APKs and decompiled binaries — too large + IP-laden, never commit
+*.apk
+*.aab
+*.dex
+*.odex
+*.vdex
+*.so
+*.bundle
+*.hbc
+*.hasm
+
+# Vendor jars — re-downloaded by bootstrap.sh
+vendor/*.jar
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+# Note: uv.lock is committed for reproducible installs.
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test outputs
+tests/runs/
+tests/fixtures/*.apk
+
+# Decompiled artifacts (in case anyone manually extracts here)
+decompiled/
+universal-apks/
+split-apks/
+
+# Logs / scratch
+*.log
+scratch/
+
+# Dynamic-analysis runtime artifacts (downloaded by setup-dynamic.sh,
+# runtime state, or AGPL-licensed third-party scripts we don't redistribute)
+vendor/frida-server-*
+vendor/.mitm.pid
+vendor/.pids/
+vendor/scripts/httptoolkit/
+vendor/scripts/disable-flutter-tls.js
