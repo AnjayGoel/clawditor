@@ -1,6 +1,6 @@
 ---
 name: dynamic-analysis
-description: Use when the user asks for dynamic / runtime Android analysis, mitmproxy capture of an APK, Frida hooks against an installed app, SSL / cert pinning bypass, or live extraction of real Firestore collection names / Storage paths / bearer tokens from a running app. Drives the `clawditor dynamic …` CLI group: setup, start, capture (incl. Flutter via BoringSSL bypass), stop. Pass `--fast` for chatty apps (mitmdump + lite Frida hooks), `--ignore-hosts auto` when heavy SDKs (AppsFlyer / Crashlytics / Firebase / GMS) block traffic with their own bundled CAs, `--bypass-pairip` for Play-anti-piracy-wrapped apps that won't start sideloaded, `--bypass-gms` when the app shows the 'Update Google Play services' dialog on launch.
+description: Use when the user asks for dynamic / runtime Android analysis, mitmproxy capture of an APK, Frida hooks against an installed app, SSL / cert pinning bypass, or live extraction of real Firestore collection names / Storage paths / bearer tokens from a running app. Drives the `clawditor dynamic …` CLI group: setup, start, capture (incl. Flutter via BoringSSL bypass), stop. Pass `--fast` for chatty apps (mitmdump + lite Frida hooks), `--ignore-hosts auto` when heavy SDKs (AppsFlyer / Crashlytics / Firebase / GMS) block traffic with their own bundled CAs, `--bypass-pairip` for Play-anti-piracy-wrapped apps that won't start sideloaded, `--bypass-gms` when the app shows the 'Update Google Play services' dialog on launch, and **`--wireguard` (with `dynamic start --wireguard` first) for Flutter / Dart / any app that ignores the Android system proxy** — it captures at the network layer via mitmproxy WireGuard mode and applies the dual (Flutter BoringSSL + Java/Conscrypt) pinning bypass.
 ---
 
 # dynamic-analysis
@@ -47,6 +47,15 @@ uv run clawditor dynamic capture com.example.chatty --fast --duration 90
 
 # Capture against a Flutter app (uses BoringSSL bypass):
 uv run clawditor dynamic capture com.example.flutter --flutter --duration 90
+
+# ⚠️ Flutter/Dart IGNORES the Android HTTP proxy — `--flutter` alone only defeats
+# pinning; the proxy capture sees nothing but OS connectivity checks. For Flutter
+# (or any proxy-ignoring app) capture at the NETWORK layer via mitmproxy WireGuard:
+uv run clawditor dynamic start   --wireguard          # provisions the on-device WG tunnel
+uv run clawditor dynamic capture com.example.flutter --flutter --wireguard --duration 120
+# --wireguard auto-handles: unset global proxy, block QUIC, dual pinning bypass
+# (Flutter BoringSSL + Java/Conscrypt), pass through pinned Google/Firebase/GMS infra.
+# One-time VPN consent may need a manual toggle in the WireGuard app on the device.
 
 # Heavy-SDK app: let AppsFlyer / Crashlytics / Firebase / GMS pass through undecoded
 # so their bundled-CA pins don't wedge the app's own backend calls.

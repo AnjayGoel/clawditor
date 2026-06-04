@@ -208,6 +208,24 @@ else
     c_ok "disable-flutter-tls.js fetched"
 fi
 
+# ─────────────────── WireGuard Android client (for --wireguard transport) ───────────────────
+# mitmproxy WireGuard mode needs a WG client on the device to capture apps that
+# ignore the Android system proxy (Flutter/Dart). See docs/dynamic-analysis.md.
+c_step "WireGuard Android client APK"
+if compgen -G "$VENDOR/com.wireguard.android-*.apk" >/dev/null; then
+    c_ok "WireGuard APK present"
+else
+    c_info "downloading latest from download.wireguard.com"
+    WG_LATEST="$(curl -fsSL https://download.wireguard.com/android-client/ \
+        | grep -oE 'com\.wireguard\.android-[0-9.]+\.apk' | sort -V | tail -1)"
+    if [[ -n "$WG_LATEST" ]]; then
+        curl -fsSL -o "$VENDOR/$WG_LATEST" "https://download.wireguard.com/android-client/$WG_LATEST"
+        c_ok "WireGuard client $WG_LATEST fetched"
+    else
+        c_err "could not resolve a WireGuard APK from download.wireguard.com (skipping; --wireguard will fail until present)"
+    fi
+fi
+
 # ─────────────────── httptoolkit unpinning scripts (AGPL — fetched, not vendored) ───────────────────
 c_step "httptoolkit unpinning scripts (battle-tested 50+ pin hooks)"
 HT_DIR="$SCRIPTS_DIR/httptoolkit"

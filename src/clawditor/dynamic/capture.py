@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from clawditor.dynamic import emulator, frida, ingest, mitm
+from clawditor.dynamic import emulator, frida, ingest, mitm, wireguard
 from clawditor.utils import logging as log
 from clawditor.utils.shell import run as sh
 
@@ -21,12 +21,19 @@ def _serial_default() -> str:
     return "emulator-5554"
 
 
-def _assert_ready(serial: str) -> None:
+def _assert_ready(serial: str, transport: str = "proxy") -> None:
     if not emulator.is_booted(serial):
         raise RuntimeError(
             f"emulator {serial} is not booted. Run `clawditor dynamic start` first."
         )
-    if not mitm.is_running():
+    if transport == "wireguard":
+        if not wireguard.is_running():
+            raise RuntimeError("WireGuard mitmproxy is not running. "
+                               "Run `clawditor dynamic start --wireguard` first.")
+        if not wireguard.tunnel_is_up(serial):
+            raise RuntimeError("WireGuard tunnel (tun0) is not up. Toggle the "
+                               f"'{wireguard.TUNNEL_NAME}' tunnel on in the WireGuard app.")
+    elif not mitm.is_running():
         raise RuntimeError("mitm proxy is not running. Run `clawditor dynamic start` first.")
     if not frida.is_server_running(serial):
         raise RuntimeError("frida-server is not running on the device. "
@@ -59,6 +66,7 @@ def capture(
     serial: str | None = None,
     proxy_port: int = 8080,
     proxy_web_port: int = 8081,
+    transport: str = "proxy",
 ) -> dict:
     """Capture one session. Returns the dict written to ``dynamic_capture.json``.
 
@@ -76,7 +84,7 @@ def capture(
     inits to fail and wedge subsequent app traffic.
     """
     serial = serial or _serial_default()
-    _assert_ready(serial)
+    _assert_ready(serial, transport)
     out_dir.mkdir(parents=True, exist_ok=True)
     flow_file = out_dir / "flows.mitm"
     out_json = out_dir / "dynamic_capture.json"
@@ -96,18 +104,28 @@ def capture(
         mode_bits.append(f"ignore_hosts={ignore_hosts[:40]}{'…' if len(ignore_hosts) > 40 else ''}")
     log.info(f"capture mode: {' / '.join(mode_bits)}")
 
-    # 1. Restart the mitm proxy with a session-specific --save-stream-file.
-    #    It must own the file for the whole session for the stream format to be valid.
-    mitm.stop()
-    mitm.start(port=proxy_port, web_port=proxy_web_port, flow_file=flow_file,
-               headless=fast, ignore_hosts=ignore_hosts)
+    # 1. Restart the proxy with a session-specific flow file (it must own the file
+    #    for the whole session for the stream format to be valid).
+    if transport == "wireguard":
+        # Transparent network-layer capture for proxy-ignoring apps (Flutter/Dart).
+        # Clear the global proxy + block QUIC, then point the WG proxy at this file.
+        wireguard.prepare_device(serial)
+        wireguard.start_proxy(flow_file, restart=True,
+                              ignore_hosts=ignore_hosts or wireguard.DEFAULT_IGNORE)
+    else:
+        mitm.stop()
+        mitm.start(port=proxy_port, web_port=proxy_web_port, flow_file=flow_file,
+                   headless=fast, ignore_hosts=ignore_hosts)
     # Give the proxy a beat to bind sockets before we trigger device traffic.
     time.sleep(2)
 
     # 2. Launch the app with pinning bypass attached. Bypass tool spawns the app.
+    #    WireGuard transport implies the dual (Flutter BoringSSL + Java/Conscrypt)
+    #    bypass, since native Firebase SDK traffic pins at the Java layer too.
     bypass = frida.bypass_pinning_objection(
         package, flutter=flutter, fast=fast,
         bypass_gms=bypass_gms, bypass_pairip=bypass_pairip,
+        dual_java=(transport == "wireguard" and flutter),
     )
     # Give the bypass tool time to attach + spawn the process.
     time.sleep(5)

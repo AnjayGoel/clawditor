@@ -472,10 +472,12 @@ def dynamic_start(
     proxy_port: int = 8080,
     proxy_web_port: int = 8081,
     headless: bool = False,
+    wireguard: bool = typer.Option(False, "--wireguard", help="Provision a mitmproxy WireGuard tunnel on the device instead of the HTTP proxy. Use for Flutter / proxy-ignoring apps. Installs the WG client, pushes the tunnel config, clears the global proxy, and blocks QUIC. The one-time VPN consent may need a manual tap in the WireGuard app."),
 ):
     """Boot the emulator, start mitmproxy, push + start frida-server, install system CA."""
     from clawditor.dynamic import emulator as _em, mitm as _mm, frida as _fr
-    from clawditor.utils.paths import frida_server_binary
+    from clawditor.dynamic import wireguard as _wg
+    from clawditor.utils.paths import frida_server_binary, dynamic_captures_dir
     serial = _dyn_serial(port)
 
     console.rule("[bold cyan]dynamic start[/]")
@@ -485,15 +487,29 @@ def dynamic_start(
     # No reboot anymore: install_mitmproxy_ca now bind-mounts the apex overlay
     # which is live immediately and would be wiped by a reboot.
     _em.install_mitmproxy_ca(serial, ca)
-    _em.set_proxy(serial, host="10.0.2.2", port=proxy_port)
-
-    _mm.start(port=proxy_port, web_port=proxy_web_port)
 
     arch = _em.detect_arch(serial)
     fbin = frida_server_binary(arch)
     _fr.push_server(serial, fbin)
     _fr.start_server(serial)
 
+    if wireguard:
+        # Transport for proxy-ignoring (Flutter/Dart) apps. NOTE: no global proxy
+        # (WG is transparent) — setting it would poison WG mode (see wireguard.py).
+        flow = dynamic_captures_dir() / "_wg_session" / "flows.mitm"
+        flow.parent.mkdir(parents=True, exist_ok=True)
+        _wg.start_proxy(flow)
+        _wg.install_client(serial)
+        _wg.push_config(serial, _wg.client_config())
+        _wg.prepare_device(serial)   # clear proxy + block QUIC
+        up = _wg.activate(serial)
+        console.print(f"\n[green]✓[/] dynamic stack up (WireGuard transport). "
+                      f"tunnel={'up' if up else 'NOT up — toggle it on in the WireGuard app'}")
+        console.print("Next: [bold]clawditor dynamic capture <pkg> --flutter --wireguard[/]")
+        return
+
+    _em.set_proxy(serial, host="10.0.2.2", port=proxy_port)
+    _mm.start(port=proxy_port, web_port=proxy_web_port)
     console.print(f"\n[green]✓[/] dynamic stack is up. mitm web UI: "
                   f"http://127.0.0.1:{proxy_web_port}")
     console.print("Next: [bold]clawditor dynamic capture <pkg>[/]")
@@ -555,6 +571,7 @@ def dynamic_capture(
     bypass_pairip: bool = typer.Option(False, "--bypass-pairip", help="Also bypass Pairip license check (for apps wrapped with Google Play's anti-piracy framework). Detect Pairip presence via `com.pairip.licensecheck` in the manifest or `com.pairip.*` smali classes."),
     ignore_hosts: str = typer.Option(None, "--ignore-hosts", help="When set, mitmproxy lets traffic to these hosts pass through undecoded. Use `auto` for the default SDK allowlist (AppsFlyer, Crashlytics, Facebook, GMS internals) that works for most consumer apps with heavy SDK pinning. Pass a custom regex to override."),
     run_id: str = typer.Option(None, "--run-id", help="If set, capture into data/<run_id>/dynamic/ alongside a static run."),
+    wireguard: bool = typer.Option(False, "--wireguard", help="Network-layer capture via mitmproxy WireGuard mode instead of the HTTP proxy. REQUIRED for Flutter / Dart / any app that ignores the Android system proxy. Implies the dual (Flutter BoringSSL + Java/Conscrypt) pinning bypass, unsets the global proxy, and blocks QUIC. Run `clawditor dynamic start --wireguard` first to provision the on-device tunnel."),
     proxy_port: int = 8080,
     port: int = 5554,
 ):
@@ -580,6 +597,7 @@ def dynamic_capture(
         bypass_gms=bypass_gms, bypass_pairip=bypass_pairip,
         ignore_hosts=ignore_hosts,
         serial=_dyn_serial(port), proxy_port=proxy_port,
+        transport="wireguard" if wireguard else "proxy",
     )
     console.print(f"[green]✓[/] wrote {out / 'dynamic_capture.json'}")
     console.print(

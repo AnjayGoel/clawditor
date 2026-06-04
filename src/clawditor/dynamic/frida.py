@@ -38,15 +38,17 @@ def start_server(serial: str) -> None:
     if is_server_running(serial):
         log.info("frida-server already running on device")
         return
-    # We launch via `adb shell nohup ... &` and detach. adb root has already run,
-    # so the shell is uid 0.
-    cmd = (
-        f"nohup {DEVICE_PATH} >/data/local/tmp/frida-server.log 2>&1 &"
-    )
-    sh(["adb", "-s", serial, "shell", "su", "0", "sh", "-c", cmd], timeout=10, check=False)
-    # Some images don't have `su` but adb root already gave us uid 0; try again unwrapped.
+    # Launch via `adb shell nohup ... &` and detach. adb root has already run, so the
+    # shell is uid 0 on the google_apis image (which has no `su` binary).
+    # NB: the redirect + `&` must reach the on-device shell as a SINGLE token —
+    # passing them as separate argv elements lets adb re-split them so `sh -c` only
+    # sees `nohup` (toybox: "nohup: Needs 1 argument"). Pass the whole line as one arg.
+    cmd = f"nohup {DEVICE_PATH} >/data/local/tmp/frida-server.log 2>&1 &"
+    sh(["adb", "-s", serial, "shell", cmd], timeout=10, check=False)
+    # Fallback for images where adb shell isn't already uid 0: wrap in `su 0`, still
+    # one quoted string so the redirect/`&` survive on-device.
     if not is_server_running(serial):
-        sh(["adb", "-s", serial, "shell", "sh", "-c", cmd], timeout=10, check=False)
+        sh(["adb", "-s", serial, "shell", f'su 0 sh -c "{cmd}"'], timeout=10, check=False)
     if not is_server_running(serial):
         raise RuntimeError("frida-server did not start. Check /data/local/tmp/frida-server.log on device.")
     log.ok("frida-server running on device")
@@ -89,6 +91,7 @@ def bypass_pinning_objection(
     fast: bool = False,
     bypass_gms: bool = False,
     bypass_pairip: bool = False,
+    dual_java: bool = False,
     extra_script: Path | None = None,
 ) -> subprocess.Popen:
     """Spawn the app with cert-pinning bypass active. Returns the running Popen.
@@ -98,6 +101,11 @@ def bypass_pinning_objection(
     ``extra_script`` is supplied.
     With ``flutter=True``: skip objection (no-op on Flutter, which uses BoringSSL) and use
     raw Frida with the NVISO disable-flutter-tls script.
+    With ``flutter=True`` AND ``dual_java=True``: ALSO load ``trust-killer.js`` in the
+    same Frida session, so the Java/Conscrypt layer is unpinned too. Flutter apps that
+    use the *native* Firebase SDK (most do) pin at both layers — the Dart BoringSSL
+    hook alone leaves their Java traffic encrypted/failing. Needed for the WireGuard
+    transport (``capture(..., transport='wireguard')``).
     With ``fast=True`` (non-Flutter only): swap ``trust-killer.js`` for the lite variant
     that drops the SSLContext.init hook. Ignored when ``flutter=True``.
     With ``bypass_gms=True`` or ``bypass_pairip=True`` (non-Flutter only): use
@@ -117,7 +125,14 @@ def bypass_pinning_objection(
                 f"Flutter-TLS bypass script missing at {script}. "
                 "Run scripts/setup-dynamic.sh to fetch it."
             )
-        cmd = ["frida", "-U", "-l", str(script), "-f", package, "--no-pause"]
+        # frida 17+ auto-resumes a spawned target by default (the old `--no-pause`
+        # flag was removed; `--pause` is now the opt-in). Just spawn with `-f`.
+        cmd = ["frida", "-U", "-l", str(script)]
+        if dual_java:
+            tk = trust_killer_script()
+            if tk.exists():
+                cmd += ["-l", str(tk)]   # also unpin Java/Conscrypt (native Firebase SDK)
+        cmd += ["-f", package]
     else:
         if not shutil.which("objection"):
             raise RuntimeError("`objection` not on PATH. Install with `pipx install objection`.")

@@ -129,6 +129,50 @@ uv run clawditor dynamic capture <com.example.flutter.app> --flutter --duration 
 That spawns the app with raw Frida and attaches the bundled NVISO
 `disable-flutter-tls.js` script instead.
 
+### ⚠️ Flutter ignores the HTTP proxy — use the WireGuard transport
+
+`--flutter` only defeats **pinning**. It does **not** make the app's traffic
+reach mitmproxy, because **Flutter's Dart `HttpClient` ignores the Android
+system HTTP proxy entirely.** A proxy-based capture of a Flutter app therefore
+sees only the OS connectivity checks (`generate_204`) — none of the app's own
+HTTPS. (`scan/stack.json` → `flutter: true` is your cue.)
+
+For Flutter / Dart / any proxy-ignoring app, capture at the **network layer**
+with mitmproxy's WireGuard mode:
+
+```bash
+uv run clawditor dynamic start   --wireguard            # provision the on-device tunnel
+uv run clawditor dynamic capture <pkg> --flutter --wireguard --duration 120
+```
+
+`--wireguard` routes *all* device egress through a WireGuard tunnel whose only
+peer is mitmproxy, so proxy-awareness is irrelevant. It automatically:
+
+- installs the WireGuard client (`vendor/com.wireguard.android-*.apk`) and pushes
+  a tunnel config into the app's data dir (endpoint rewritten to `10.0.2.2:51820`);
+- **unsets the global HTTP proxy** (leaving it set poisons WG mode — apps send
+  proxy-style requests to `10.0.2.2:8080` and mitmproxy tries to connect upstream
+  to itself: `Connect call failed ('10.0.2.2', 8080)`);
+- **blocks QUIC** (UDP/443) so Google/Firebase fall back to interceptable TCP/TLS;
+- runs the **dual pinning bypass** — Flutter BoringSSL *and* Java/Conscrypt
+  (`trust-killer.js`) — because Flutter apps using the native Firebase SDK pin at
+  both layers;
+- **passes through pinned Google/Firebase/GMS infra** (App Check, Remote Config,
+  Installations, Crashlytics — see `wireguard.DEFAULT_IGNORE`). These run in the
+  *GMS* process (not hookable by the app-scoped Frida bypass) and will wedge the
+  app on splash → ANR if intercepted. The app's own backend + third-party SDKs
+  still decrypt.
+
+**One manual step:** Android requires VpnService consent the first time. `start
+--wireguard` taps through it best-effort; if the tunnel doesn't come up
+(`tun0` absent), open the WireGuard app on the device and toggle the `clawditor`
+tunnel on (accept the "Connection request" → OK), then re-run capture.
+
+Implementation: `src/clawditor/dynamic/wireguard.py` (the module docstring lists
+every gotcha). The recipe was validated against a real Flutter app — it yielded
+fully decrypted HTTP/2 where proxy / transparent-redirect / friTap all
+returned nothing.
+
 ## Output
 
 ```

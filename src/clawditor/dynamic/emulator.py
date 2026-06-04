@@ -6,9 +6,28 @@ image refuses ``adb root`` and ``adb remount``, which kills the system-CA instal
 """
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from pathlib import Path
+
+
+def _resolve_emulator() -> str | None:
+    """Locate the Android SDK ``emulator`` binary, preferring the SDK over PATH.
+
+    A stale Homebrew ``emulator`` (an old standalone build) can shadow the real
+    SDK one on PATH; that old binary resolves its qemu/Qt libs relative to its
+    own dir and dies on launch. So check the SDK locations first, then PATH.
+    """
+    roots = [os.environ.get("ANDROID_HOME"), os.environ.get("ANDROID_SDK_ROOT"),
+             os.path.expanduser("~/Library/Android/sdk"),
+             os.path.expanduser("~/Android/Sdk")]
+    for root in roots:
+        if root:
+            cand = Path(root) / "emulator" / "emulator"
+            if cand.exists():
+                return str(cand)
+    return shutil.which("emulator")
 
 from clawditor.dynamic import _proc
 from clawditor.utils import logging as log
@@ -48,7 +67,7 @@ def boot(
         return
 
     require("adb")
-    emu = shutil.which("emulator")
+    emu = _resolve_emulator()
     if not emu:
         raise RuntimeError(
             "`emulator` not on PATH. Install via Android SDK and add "
